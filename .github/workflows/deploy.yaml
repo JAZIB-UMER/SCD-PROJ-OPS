@@ -40,5 +40,14 @@ jobs:
         token: ${{ secrets.GITOPS_PAT }}
         repository: jazibumer/SCD-GIT-OPS
         event-type: update-image
-        client-payload: '{"image_tag": "0.0.${{ github.run_number }}"}'
+        # client-payload: '{"image_tag": "0.0.${{ github.run_number }}"}'
+      env:
+        IMAGE_TAG: 0.0.${{ github.run_number }}
+        GITOPS_REPO: jazibumer/SCD-GIT-OPS
+        run: |
+            echo "Triggering GitOps repo with image tag $IMAGE_TAG"
+            curl -X POST https://api.github.com/repos/$GITOPS_REPO/dispatches \
+              -H "Authorization: token ${{ secrets.GITOPS_PAT }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"event_type\": \"update-image\", \"client_payload\": {\"image_tag\": \"$IMAGE_TAG\"}}"      
 
