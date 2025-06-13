@@ -1,4 +1,4 @@
-name: Build, Push, and Trigger GitOps
+name: Build, Push, and Update GitOps
 on:
   push:
     branches:
@@ -33,10 +33,72 @@ jobs:
           docker build -t jazibumer/scd_proj_image:$IMAGE_TAG .
           docker push jazibumer/scd_proj_image:$IMAGE_TAG
 
-      - name: Trigger GitOps repo to update image tag
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.GITOPS_PAT }}
-          repository: JAZIB-UMER/SCD-GIT-OPS
-          event-type: update-image
-          client-payload: '{"image_tag": "0.0.${{ github.run_number }}"}'
+      - name: Update GitOps Repository (dev-kubernetes branch)
+        run: |
+          IMAGE_TAG=0.0.${{ github.run_number }}
+          
+          echo "🚀 Starting GitOps update process..."
+          echo "Target branch: dev-kubernetes"
+          echo "New image tag: $IMAGE_TAG"
+          
+          # Clone GitOps repository
+          echo "📥 Cloning GitOps repository..."
+          git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
+          cd gitops-repo
+          
+          # Switch to dev-kubernetes branch
+          echo "🔄 Switching to dev-kubernetes branch..."
+          git checkout dev-kubernetes
+          
+          # Configure git
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          # Verify deployment file exists
+          if [ ! -f "k8s/deployment.yaml" ]; then
+            echo "❌ Error: k8s/deployment.yaml not found on dev-kubernetes branch"
+            echo "Available files:"
+            find . -name "*.yaml" -o -name "*.yml" | head -10
+            exit 1
+          fi
+          
+          # Show current state
+          echo "📋 Current deployment.yaml content:"
+          cat k8s/deployment.yaml | grep -A2 -B2 "image:" || echo "No image line found"
+          
+          # Update image tag
+          echo "✏️ Updating image tag..."
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$IMAGE_TAG|g" k8s/deployment.yaml
+          
+          # Verify the change
+          echo "📋 Updated deployment.yaml content:"
+          cat k8s/deployment.yaml | grep -A2 -B2 "image:"
+          
+          # Check if changes were made
+          if git diff --quiet k8s/deployment.yaml; then
+            echo "⚠️ No changes detected in deployment.yaml"
+            echo "This might indicate:"
+            echo "1. The sed command didn't match the image line"
+            echo "2. The image tag was already up to date"
+            echo "Current image line:"
+            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            exit 1
+          fi
+          
+          # Commit and push changes
+          echo "💾 Committing changes..."
+          git add k8s/deployment.yaml
+          git commit -m "🚀 Update image tag to $IMAGE_TAG [Build #${{ github.run_number }}]
+
+          - Updated from main project workflow
+          - Source commit: ${{ github.sha }}
+          - Build number: ${{ github.run_number }}
+          - Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          
+          echo "📤 Pushing to dev-kubernetes branch..."
+          git push origin dev-kubernetes
+          
+          echo "✅ Successfully updated GitOps repository!"
+          echo "🎯 Branch: dev-kubernetes"
+          echo "🏷️ New tag: $IMAGE_TAG"
+          echo "📝 Commit pushed successfully"
