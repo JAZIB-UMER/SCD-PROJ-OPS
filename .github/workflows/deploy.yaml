@@ -38,7 +38,7 @@ jobs:
       uses: peter-evans/repository-dispatch@v3
       with:
         token: ${{ secrets.GITOPS_PAT }}
-        repository: jazibumer/scd-git-ops
+        repository: jazibumer/SCD-GIT-OPS
         event-type: update-image
         client-payload: '{"image_tag": "0.0.${{ github.run_number }}"}'
 
