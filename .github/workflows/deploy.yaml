@@ -1,4 +1,4 @@
-name: Build, Push, and Update GitOps
+name: Build, Push, and Update GitOpss
 on:
   push:
     branches:
