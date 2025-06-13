@@ -43,7 +43,7 @@ jobs:
         # client-payload: '{"image_tag": "0.0.${{ github.run_number }}"}'
       env:
         IMAGE_TAG: 0.0.${{ github.run_number }}
-        GITOPS_REPO: jazibumer/SCD-GIT-OPS
+        GITOPS_REPO: JAZIB-UMER/SCD-GIT-OPS
         run: |
             echo "Triggering GitOps repo with image tag $IMAGE_TAG"
             curl -X POST https://api.github.com/repos/$GITOPS_REPO/dispatches \
