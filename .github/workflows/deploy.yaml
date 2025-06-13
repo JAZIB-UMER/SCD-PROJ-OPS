@@ -55,8 +55,8 @@ jobs:
           git config user.email "actions@github.com"
           
           # Verify deployment file exists
-          if [ ! -f "k8s/deployment.yaml" ]; then
-            echo "❌ Error: k8s/deployment.yaml not found on dev-kubernetes branch"
+          if [ ! -f "K8s/deployment.yaml" ]; then
+            echo "❌ Error: K8s/deployment.yaml not found on dev-kubernetes branch"
             echo "Available files:"
             find . -name "*.yaml" -o -name "*.yml" | head -10
             exit 1
@@ -64,30 +64,30 @@ jobs:
           
           # Show current state
           echo "📋 Current deployment.yaml content:"
-          cat k8s/deployment.yaml | grep -A2 -B2 "image:" || echo "No image line found"
+          cat K8s/deployment.yaml | grep -A2 -B2 "image:" || echo "No image line found"
           
           # Update image tag
           echo "✏️ Updating image tag..."
-          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$IMAGE_TAG|g" k8s/deployment.yaml
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$IMAGE_TAG|g" K8s/deployment.yaml
           
           # Verify the change
           echo "📋 Updated deployment.yaml content:"
-          cat k8s/deployment.yaml | grep -A2 -B2 "image:"
+          cat K8s/deployment.yaml | grep -A2 -B2 "image:"
           
           # Check if changes were made
-          if git diff --quiet k8s/deployment.yaml; then
+          if git diff --quiet K8s/deployment.yaml; then
             echo "⚠️ No changes detected in deployment.yaml"
             echo "This might indicate:"
             echo "1. The sed command didn't match the image line"
             echo "2. The image tag was already up to date"
             echo "Current image line:"
-            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            grep "image:" K8s/deployment.yaml || echo "No image line found"
             exit 1
           fi
           
           # Commit and push changes
           echo "💾 Committing changes..."
-          git add k8s/deployment.yaml
+          git add K8s/deployment.yaml
           git commit -m "🚀 Update image tag to $IMAGE_TAG [Build #${{ github.run_number }}]
 
           - Updated from main project workflow
