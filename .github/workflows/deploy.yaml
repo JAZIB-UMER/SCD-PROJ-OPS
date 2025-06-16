@@ -1,0 +1,82 @@
+name: Build, Push, and Update GitOp
+
+on:
+  push:
+    branches:
+      - dev-kubernetes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
+
+      - name: Build with Maven
+        run: mvn -B clean package -DskipTests
+
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  dockerize-and-update:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image with Git SHA tag
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: jazibumer/scd_proj_image:${{ github.sha }}
+          build-args: |
+            JAR_FILE=target/$(ls target | grep '.jar')
+
+      - name: Update GitOps Repository (dev-kubernetes branch)
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::7}
+          git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
+          cd gitops-repo
+          git checkout dev-kubernetes
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$IMAGE_TAG|g" K8s/deployment.yaml
+
+          git add K8s/deployment.yaml
+          git commit -m "🔄 Update image tag to $IMAGE_TAG"
+          git push origin dev-kubernetes
