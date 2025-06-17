@@ -1,4 +1,4 @@
-name: Reuse or Rebuild Docker Image for Test
+name: Build, Push, and Update GitOp
 
 on:
   push:
@@ -6,39 +6,20 @@ on:
       - test
 
 jobs:
-  deploy-test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Get short SHA from dev branch
-        id: get_dev_sha
-        run: |
-          DEV_SHA=$(git ls-remote https://github.com/JAZIB-UMER/SCD.git refs/heads/dev | cut -f1 | cut -c1-7)
-          echo "DEV_SHORT_SHA=$DEV_SHA" >> $GITHUB_ENV
-
-      - name: Check if dev Docker image exists
-        id: check_dev_image
-        run: |
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/${{ env.DEV_SHORT_SHA }}/)
-          echo "Docker Hub Status Code: $STATUS_CODE"
-          if [ "$STATUS_CODE" = "200" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Set up JDK
-        if: steps.check_dev_image.outputs.exists == 'false'
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
 
       - name: Cache Maven packages
-        if: steps.check_dev_image.outputs.exists == 'false'
         uses: actions/cache@v4
         with:
           path: |
@@ -48,8 +29,49 @@ jobs:
             maven-${{ runner.os }}-
 
       - name: Build with Maven
-        if: steps.check_dev_image.outputs.exists == 'false'
         run: mvn -B clean package -DskipTests
+
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  dockerize-and-update:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Get short SHA from dev branch
+        id: get_dev_sha
+        run: |
+          DEV_SHA=$(git ls-remote https://github.com/JAZIB-UMER/SCD.git refs/heads/dev | cut -f1 | cut -c1-7)
+          echo "DEV_SHORT_SHA=$DEV_SHA"
+          echo "DEV_SHORT_SHA=$DEV_SHA" >> $GITHUB_ENV
+
+      - name: Check if dev image exists on Docker Hub
+        id: check_dev_image
+        run: |
+          if [ -z "$DEV_SHORT_SHA" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$DEV_SHORT_SHA/)
+          echo "Image status code: $STATUS"
+          if [ "$STATUS" == "200" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -60,18 +82,18 @@ jobs:
       - name: Reuse and re-tag image from dev
         if: steps.check_dev_image.outputs.exists == 'true'
         run: |
-          docker pull jazibumer/scd_proj_image:${{ env.DEV_SHORT_SHA }}
-          docker tag jazibumer/scd_proj_image:${{ env.DEV_SHORT_SHA }} jazibumer/scd_proj_image:test-latest
+          echo "Reusing dev image: $DEV_SHORT_SHA"
+          docker pull jazibumer/scd_proj_image:$DEV_SHORT_SHA
+          docker tag jazibumer/scd_proj_image:$DEV_SHORT_SHA jazibumer/scd_proj_image:test-latest
           docker push jazibumer/scd_proj_image:test-latest
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image with test SHA
         if: steps.check_dev_image.outputs.exists == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            jazibumer/scd_proj_image:test-latest
+          tags: jazibumer/scd_proj_image:${{ github.sha }}
           build-args: |
             JAR_FILE=target/$(ls target | grep '.jar')
 
@@ -83,8 +105,13 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
 
-          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:test-latest|g" K8s/deployment.yaml
+          NEW_TAG="${{ github.sha }}"
+          if [ "${{ steps.check_dev_image.outputs.exists }}" == "true" ]; then
+            NEW_TAG="test-latest"
+          fi
+
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$NEW_TAG|g" K8s/deployment.yaml
 
           git add K8s/deployment.yaml
-          git commit -m "🔄 Use image for test (from dev or rebuilt)"
+          git commit -m "🔄 Update image tag to $NEW_TAG"
           git push origin test
