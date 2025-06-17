@@ -147,6 +147,8 @@ jobs:
           docker push jazibumer/scd_proj_image:test-latest
           
           echo "✅ Tagged and pushed test-latest"
+      
+      - name: Update GitOps Repository (test branch)
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
           cd gitops-repo
