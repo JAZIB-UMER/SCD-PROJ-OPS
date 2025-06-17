@@ -231,7 +231,7 @@ jobs:
           git push origin staging_kubernetes
           echo "✅ Created staging_kubernetes branch from dev-kubernetes"
       
-      - name: Check if PR already exists from dev-kubernetes to staging_kubernetes
+      - name: Check if PR already exists from dev-kubernetes to staging-kubernetes
         id: check_existing_pr
         run: |
           # Check if PR exists from dev-kubernetes to staging_kubernetes in CURRENT repository
@@ -240,10 +240,10 @@ jobs:
           if [ -n "$EXISTING_PR" ]; then
             echo "pr_exists=true" >> $GITHUB_OUTPUT
             echo "pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
-            echo "✅ Found existing PR #$EXISTING_PR from dev-kubernetes to staging_kubernetes"
+            echo "✅ Found existing PR #$EXISTING_PR from dev-kubernetes to staging-kubernetes"
           else
             echo "pr_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ No existing PR found from dev-kubernetes to staging_kubernetes"
+            echo "❌ No existing PR found from dev-kubernetes to staging-kubernetes"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -284,7 +284,7 @@ jobs:
           **Commit Message:** $COMMIT_MSG
           **Image Tag:** \`${{ steps.get_info.outputs.current_tag }}\`
           **Source Branch:** \`dev-kubernetes\`
-          **Target Branch:** \`staging_kubernetes\`
+          **Target Branch:** \`staging-kubernetes\`
           **Triggered by:** ${{ github.actor }}
           **Created:** $(date)
           
@@ -301,7 +301,7 @@ jobs:
           
           gh pr create \
             --repo ${{ github.repository }} \
-            --base staging_kubernetes \
+            --base staging-kubernetes \
             --head dev-kubernetes \
             --title "$PR_TITLE" \
             --body "$PR_BODY" \
