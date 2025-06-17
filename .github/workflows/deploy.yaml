@@ -55,23 +55,23 @@ jobs:
         id: get_dev_sha
         run: |
           DEV_SHA=$(git ls-remote https://github.com/JAZIB-UMER/SCD.git refs/heads/dev | cut -f1 | cut -c1-7)
-          echo "DEV_SHORT_SHA=$DEV_SHA"
-          echo "DEV_SHORT_SHA=$DEV_SHA" >> $GITHUB_ENV
+          echo "short_sha=$DEV_SHA" >> $GITHUB_OUTPUT
 
       - name: Check if dev image exists on Docker Hub
         id: check_dev_image
         run: |
-          if [ -z "$DEV_SHORT_SHA" ]; then
+          SHA=${{ steps.get_dev_sha.outputs.short_sha }}
+          if [ -z "$SHA" ]; then
             echo "exists=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$DEV_SHORT_SHA/)
-          echo "Image status code: $STATUS"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$SHA/)
           if [ "$STATUS" == "200" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -82,9 +82,10 @@ jobs:
       - name: Reuse and re-tag image from dev
         if: steps.check_dev_image.outputs.exists == 'true'
         run: |
-          echo "Reusing dev image: $DEV_SHORT_SHA"
-          docker pull jazibumer/scd_proj_image:$DEV_SHORT_SHA
-          docker tag jazibumer/scd_proj_image:$DEV_SHORT_SHA jazibumer/scd_proj_image:test-latest
+          SHORT_SHA=${{ steps.check_dev_image.outputs.sha }}
+          echo "Reusing dev image: $SHORT_SHA"
+          docker pull jazibumer/scd_proj_image:$SHORT_SHA
+          docker tag jazibumer/scd_proj_image:$SHORT_SHA jazibumer/scd_proj_image:test-latest
           docker push jazibumer/scd_proj_image:test-latest
 
       - name: Build and push Docker image with test SHA
@@ -105,13 +106,13 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
 
-          NEW_TAG="${{ github.sha }}"
-          if [ "${{ steps.check_dev_image.outputs.exists }}" == "true" ]; then
-            NEW_TAG="test-latest"
+          TAG="${{ github.sha }}"
+          if [ "${{ steps.check_dev_image.outputs.exists }}" = "true" ]; then
+            TAG="test-latest"
           fi
 
-          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$NEW_TAG|g" K8s/deployment.yaml
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$TAG|g" K8s/deployment.yaml
 
           git add K8s/deployment.yaml
-          git commit -m "🔄 Update image tag to $NEW_TAG"
+          git commit -m "🔄 Update image tag to $TAG"
           git push origin test
