@@ -1,88 +1,148 @@
-name: Build, Push, and Update GitOp
-
+name: Build, Push, and Update GitOps
 on:
   push:
     branches:
       - dev-kubernetes
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+      
+      - name: Get current commit info
+        id: commit_info
+        run: |
+          CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "✅ Current commit SHA: $CURRENT_SHORT_SHA"
+      
+      - name: Cache JAR files by commit
+        id: jar_cache
+        uses: actions/cache@v4
+        with:
+          path: target/*.jar
+          key: jar-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            jar-${{ runner.os }}-
+      
+      - name: Check if JAR exists in cache
+        id: check_jar_cache
+        run: |
+          if [ -f target/*.jar ]; then
+            echo "jar_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ JAR found in cache, skipping build"
+            ls -la target/
+          else
+            echo "jar_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ No JAR in cache, will build"
+          fi
+      
       - name: Set up JDK
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-
-      - name: Cache Maven packages
+      
+      - name: Cache Maven dependencies
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
         uses: actions/cache@v4
         with:
           path: |
             ~/.m2/repository
-          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          key: maven-deps-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            maven-${{ runner.os }}-
-
-      - name: Build with Maven
-        run: mvn -B clean package -DskipTests
-
+            maven-deps-${{ runner.os }}-
+      
+      - name: Cache Maven build cache
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/maven-status
+            target/classes
+          key: maven-build-${{ runner.os }}-${{ hashFiles('src/**/*', 'pom.xml') }}
+          restore-keys: |
+            maven-build-${{ runner.os }}-
+      
+      - name: Build with Maven (only if needed)
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
+        run: |
+          echo "🔨 Building JAR with Maven..."
+          mvn -B package -DskipTests
+          echo "✅ Build completed"
+          ls -la target/
+      
       - name: Upload JAR as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-jar
+          name: app-jar-${{ steps.commit_info.outputs.current_short_sha }}
           path: target/*.jar
 
   dockerize-and-update:
     needs: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: target
-
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Extract short SHA
-        id: extract_sha
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-
-      - name: Check if Docker image exists
+      
+      - name: Get current branch name and short SHA
+        id: get_current_info
+        run: |
+          CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/})
+          CURRENT_TAG="${CURRENT_SHORT_SHA}-${BRANCH_NAME}"
+          
+          echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          
+          echo "✅ Current commit SHA: $CURRENT_SHORT_SHA"
+          echo "✅ Current branch: $BRANCH_NAME"
+          echo "✅ Current tag will be: $CURRENT_TAG"
+      
+      - name: Check if Docker image already exists
         id: check_image
         run: |
-          IMAGE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/${SHORT_SHA}/)
-          echo "Docker Hub response: $IMAGE_EXISTS"
-          if [ "$IMAGE_EXISTS" = "200" ]; then
+          CURRENT_TAG=${{ steps.get_current_info.outputs.current_tag }}
+          echo "🔍 Checking if image already exists: jazibumer/scd_proj_image:$CURRENT_TAG"
+          
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$CURRENT_TAG/")
+          echo "API Response Status: $STATUS"
+          
+          if [ "$STATUS" = "200" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Image already exists, will skip building"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Image does not exist, will build"
           fi
-
+      
+      - name: Download JAR artifact
+        if: steps.check_image.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar-${{ steps.get_current_info.outputs.current_short_sha }}
+          path: target
+      
       - name: Log in to Docker Hub
         if: steps.check_image.outputs.exists == 'false'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Docker image with short SHA tag
+      
+      - name: Build and push Docker image with SHA-Branch tag
         if: steps.check_image.outputs.exists == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: jazibumer/scd_proj_image:${{ env.SHORT_SHA }}
+          tags: jazibumer/scd_proj_image:${{ steps.get_current_info.outputs.current_tag }}
           build-args: |
-            JAR_FILE=target/$(ls target | grep '.jar')
-
+            JAR_FILE=target/*.jar
+      
       - name: Update GitOps Repository (dev-kubernetes branch)
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
@@ -90,9 +150,18 @@ jobs:
           git checkout dev-kubernetes
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-
-          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:${SHORT_SHA}|g" K8s/deployment.yaml
-
+          
+          # Use current tag format (SHA-BranchName)
+          TAG=${{ steps.get_current_info.outputs.current_tag }}
+          
+          echo "Updating deployment with image tag: $TAG"
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$TAG|g" K8s/deployment.yaml
+          
           git add K8s/deployment.yaml
-          git commit -m "🔄 Update image tag to ${SHORT_SHA}"
+          
+          if [ "${{ steps.check_image.outputs.exists }}" = "true" ]; then
+            git commit -m "🔄 Update image tag to $TAG (image already existed)"
+          else
+            git commit -m "🔄 Update image tag to $TAG (new build)"
+          fi
           git push origin dev-kubernetes
