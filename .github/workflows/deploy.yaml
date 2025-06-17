@@ -1,5 +1,4 @@
-name: Build, Push, and Update GitOp
-
+name: Build, Push, and Update GitOps
 on:
   push:
     branches:
@@ -44,39 +43,50 @@ jobs:
           CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
       
-      - name: Get short SHA from dev branch
+      - name: Get short SHA from dev-kubernetes branch
         id: get_dev_sha
         run: |
-          # Try to get dev branch SHA with error handling
-          if DEV_SHA=$(git ls-remote origin refs/heads/dev 2>/dev/null | cut -f1 | cut -c1-7); then
+          echo "Checking for dev-kubernetes branch..."
+          
+          # First, let's see what branches are available
+          echo "Available remote branches:"
+          git ls-remote origin
+          
+          # Try to get dev-kubernetes branch SHA
+          DEV_FULL_SHA=$(git ls-remote origin refs/heads/dev-kubernetes 2>/dev/null | cut -f1)
+          
+          if [ -n "$DEV_FULL_SHA" ] && [ "$DEV_FULL_SHA" != "" ]; then
+            DEV_SHA=$(echo "$DEV_FULL_SHA" | cut -c1-7)
             echo "dev_short_sha=$DEV_SHA" >> $GITHUB_OUTPUT
-            echo "Dev branch SHA: $DEV_SHA"
+            echo "✅ Dev-kubernetes branch found with SHA: $DEV_SHA (full: $DEV_FULL_SHA)"
           else
             echo "dev_short_sha=" >> $GITHUB_OUTPUT
-            echo "Dev branch not found or accessible, will build new image"
+            echo "❌ Dev-kubernetes branch not found, will build new image"
           fi
       
-      - name: Check if dev image exists on Docker Hub
+      - name: Check if dev-kubernetes image exists on Docker Hub
         id: check_dev_image
         run: |
           DEV_SHA=${{ steps.get_dev_sha.outputs.dev_short_sha }}
-          if [ -z "$DEV_SHA" ]; then
+          echo "Checking for dev-kubernetes SHA: '$DEV_SHA'"
+          
+          if [ -z "$DEV_SHA" ] || [ "$DEV_SHA" = "" ]; then
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Dev SHA is empty, cannot check for existing image"
+            echo "❌ Dev-kubernetes SHA is empty, cannot check for existing image"
             exit 0
           fi
           
           # Check if image exists using Docker Hub API
-          echo "Checking for image: jazibumer/scd_proj_image:$DEV_SHA"
+          echo "🔍 Checking for image: jazibumer/scd_proj_image:$DEV_SHA"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$DEV_SHA/")
           echo "API Response Status: $STATUS"
           
-          if [ "$STATUS" == "200" ]; then
+          if [ "$STATUS" = "200" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Dev image exists, will reuse it"
+            echo "✅ Dev-kubernetes image exists, will reuse it"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Dev image does not exist, will build new image"
+            echo "❌ Dev-kubernetes image does not exist (Status: $STATUS), will build new image"
           fi
       
       - name: Log in to Docker Hub
@@ -85,29 +95,25 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       
-      - name: Reuse and re-tag image from dev
+      - name: Reuse and re-tag image from dev-kubernetes
         if: steps.check_dev_image.outputs.exists == 'true'
         run: |
           DEV_SHA=${{ steps.get_dev_sha.outputs.dev_short_sha }}
           CURRENT_SHA=${{ steps.get_current_sha.outputs.current_short_sha }}
           
-          echo "Reusing dev image with SHA: $DEV_SHA"
-          echo "Tagging it with current SHA: $CURRENT_SHA"
+          echo "🔄 Reusing dev-kubernetes image with SHA: $DEV_SHA"
+          echo "🏷️  Tagging it with current SHA: $CURRENT_SHA"
           
-          # Pull the existing dev image
+          # Pull the existing dev-kubernetes image
           docker pull jazibumer/scd_proj_image:$DEV_SHA
           
           # Tag it with current commit's short SHA
           docker tag jazibumer/scd_proj_image:$DEV_SHA jazibumer/scd_proj_image:$CURRENT_SHA
           
-          # Also tag it with test-latest for easy reference
-          docker tag jazibumer/scd_proj_image:$DEV_SHA jazibumer/scd_proj_image:test-latest
-          
-          # Push both tags
+          # Push the new tag
           docker push jazibumer/scd_proj_image:$CURRENT_SHA
-          docker push jazibumer/scd_proj_image:test-latest
           
-          echo "Successfully reused and re-tagged image"
+          echo "✅ Successfully reused and re-tagged image from dev-kubernetes"
       
       - name: Build and push Docker image with current SHA
         if: steps.check_dev_image.outputs.exists == 'false'
@@ -128,13 +134,19 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            jazibumer/scd_proj_image:${{ steps.get_current_sha.outputs.current_short_sha }}
-            jazibumer/scd_proj_image:test-latest
+          tags: jazibumer/scd_proj_image:${{ steps.get_current_sha.outputs.current_short_sha }}
           build-args: |
-            JAR_FILE=target/$(ls target | grep '.jar')
+            JAR_FILE=target/*.jar
       
-      - name: Update GitOps Repository (test branch)
+      - name: Tag with test-latest (for both reused and new images)
+        run: |
+          CURRENT_SHA=${{ steps.get_current_sha.outputs.current_short_sha }}
+          
+          # Tag the current image (either reused or newly built) with test-latest
+          docker tag jazibumer/scd_proj_image:$CURRENT_SHA jazibumer/scd_proj_image:test-latest
+          docker push jazibumer/scd_proj_image:test-latest
+          
+          echo "✅ Tagged and pushed test-latest"
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
           cd gitops-repo
@@ -150,7 +162,7 @@ jobs:
           
           git add K8s/deployment.yaml
           if [ "${{ steps.check_dev_image.outputs.exists }}" = "true" ]; then
-            git commit -m "🔄 Update image tag to $TAG (reused from dev)"
+            git commit -m "🔄 Update image tag to $TAG (reused from dev-kubernetes)"
           else
             git commit -m "🔄 Update image tag to $TAG (new build)"
           fi
