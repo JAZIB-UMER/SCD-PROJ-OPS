@@ -9,25 +9,89 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - name: Get current commit info
+        id: commit_info
+        run: |
+          CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "✅ Current commit SHA: $CURRENT_SHORT_SHA"
+      
+      - name: Check if JAR already exists as artifact
+        id: check_jar_artifact
+        run: |
+          # Check if there's already a JAR for this exact commit
+          echo "🔍 Checking if JAR artifact exists for commit: ${{ steps.commit_info.outputs.current_short_sha }}"
+          
+          # Try to download existing JAR artifact for this commit
+          # This will only work if the exact same commit was built before
+          ARTIFACT_EXISTS="false"
+          
+          # We'll check this in the next step by trying to find a cached JAR
+          echo "jar_exists=false" >> $GITHUB_OUTPUT
+          echo "❌ Will need to check for cached JAR or build new one"
+      
+      - name: Cache JAR files by commit
+        id: jar_cache
+        uses: actions/cache@v4
+        with:
+          path: target/*.jar
+          key: jar-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            jar-${{ runner.os }}-
+      
+      - name: Check if JAR exists in cache
+        id: check_jar_cache
+        run: |
+          if [ -f target/*.jar ]; then
+            echo "jar_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ JAR found in cache, skipping build"
+            ls -la target/
+          else
+            echo "jar_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ No JAR in cache, will build"
+          fi
+      
       - name: Set up JDK
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-      - name: Cache Maven packages
+      
+      - name: Cache Maven dependencies
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
         uses: actions/cache@v4
         with:
           path: |
             ~/.m2/repository
-          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          key: maven-deps-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            maven-${{ runner.os }}-
-      - name: Build with Maven
-        run: mvn -B clean package -DskipTests
+            maven-deps-${{ runner.os }}-
+      
+      - name: Cache Maven build cache
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/maven-status
+            target/classes
+          key: maven-build-${{ runner.os }}-${{ hashFiles('src/**/*', 'pom.xml') }}
+          restore-keys: |
+            maven-build-${{ runner.os }}-
+      
+      - name: Build with Maven (only if needed)
+        if: steps.check_jar_cache.outputs.jar_exists == 'false'
+        run: |
+          echo "🔨 Building JAR with Maven..."
+          mvn -B package -DskipTests
+          echo "✅ Build completed"
+          ls -la target/
+      
       - name: Upload JAR as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-jar
+          name: app-jar-${{ steps.commit_info.outputs.current_short_sha }}
           path: target/*.jar
 
   dockerize-and-update:
@@ -148,7 +212,7 @@ jobs:
         if: steps.check_current_image.outputs.exists == 'false' && steps.check_dev_image.outputs.exists == 'false'
         uses: actions/download-artifact@v4
         with:
-          name: app-jar
+          name: app-jar-${{ steps.get_current_info.outputs.current_short_sha }}
           path: target
       
       - name: Build and push new Docker image
