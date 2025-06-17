@@ -46,9 +46,14 @@ jobs:
       - name: Get short SHA from dev branch
         id: get_dev_sha
         run: |
-          DEV_SHA=$(git ls-remote https://github.com/JAZIB-UMER/SCD.git refs/heads/dev | cut -f1 | cut -c1-7)
-          echo "dev_short_sha=$DEV_SHA" >> $GITHUB_OUTPUT
-          echo "Dev branch SHA: $DEV_SHA"
+          # Try to get dev branch SHA with error handling
+          if DEV_SHA=$(git ls-remote origin refs/heads/dev 2>/dev/null | cut -f1 | cut -c1-7); then
+            echo "dev_short_sha=$DEV_SHA" >> $GITHUB_OUTPUT
+            echo "Dev branch SHA: $DEV_SHA"
+          else
+            echo "dev_short_sha=" >> $GITHUB_OUTPUT
+            echo "Dev branch not found or accessible, will build new image"
+          fi
       
       - name: Check if dev image exists on Docker Hub
         id: check_dev_image
