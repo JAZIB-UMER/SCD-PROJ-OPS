@@ -3,22 +3,18 @@ name: Build, Push, and Update GitOps
 on:
   push:
     branches:
-      - dev-kubernetes
-
+      - test
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-
       - name: Cache Maven packages
         uses: actions/cache@v4
         with:
@@ -27,10 +23,8 @@ jobs:
           key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             maven-${{ runner.os }}-
-
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
-
       - name: Upload JAR as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -40,59 +34,124 @@ jobs:
   dockerize-and-update:
     needs: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: target
-
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Extract short SHA
-        id: extract_sha
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-
-      - name: Check if Docker image exists
-        id: check_image
+      
+      - name: Get short SHA for current commit
+        id: get_current_sha
         run: |
-          IMAGE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/${SHORT_SHA}/)
-          echo "Docker Hub response: $IMAGE_EXISTS"
-          if [ "$IMAGE_EXISTS" = "200" ]; then
+          CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
+      
+      - name: Get short SHA from dev branch
+        id: get_dev_sha
+        run: |
+          # Try to get dev branch SHA with error handling
+          if DEV_SHA=$(git ls-remote origin refs/heads/dev 2>/dev/null | cut -f1 | cut -c1-7); then
+            echo "dev_short_sha=$DEV_SHA" >> $GITHUB_OUTPUT
+            echo "Dev branch SHA: $DEV_SHA"
+          else
+            echo "dev_short_sha=" >> $GITHUB_OUTPUT
+            echo "Dev branch not found or accessible, will build new image"
+          fi
+      
+      - name: Check if dev image exists on Docker Hub
+        id: check_dev_image
+        run: |
+          DEV_SHA=${{ steps.get_dev_sha.outputs.dev_short_sha }}
+          if [ -z "$DEV_SHA" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Dev SHA is empty, cannot check for existing image"
+            exit 0
+          fi
+          
+          # Check if image exists using Docker Hub API
+          echo "Checking for image: jazibumer/scd_proj_image:$DEV_SHA"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://hub.docker.com/v2/repositories/jazibumer/scd_proj_image/tags/$DEV_SHA/")
+          echo "API Response Status: $STATUS"
+          
+          if [ "$STATUS" == "200" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Dev image exists, will reuse it"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Dev image does not exist, will build new image"
           fi
-
+      
       - name: Log in to Docker Hub
-        if: steps.check_image.outputs.exists == 'false'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Docker image with short SHA tag
-        if: steps.check_image.outputs.exists == 'false'
+      
+      - name: Reuse and re-tag image from dev
+        if: steps.check_dev_image.outputs.exists == 'true'
+        run: |
+          DEV_SHA=${{ steps.get_dev_sha.outputs.dev_short_sha }}
+          CURRENT_SHA=${{ steps.get_current_sha.outputs.current_short_sha }}
+          
+          echo "Reusing dev image with SHA: $DEV_SHA"
+          echo "Tagging it with current SHA: $CURRENT_SHA"
+          
+          # Pull the existing dev image
+          docker pull jazibumer/scd_proj_image:$DEV_SHA
+          
+          # Tag it with current commit's short SHA
+          docker tag jazibumer/scd_proj_image:$DEV_SHA jazibumer/scd_proj_image:$CURRENT_SHA
+          
+          # Also tag it with test-latest for easy reference
+          docker tag jazibumer/scd_proj_image:$DEV_SHA jazibumer/scd_proj_image:test-latest
+          
+          # Push both tags
+          docker push jazibumer/scd_proj_image:$CURRENT_SHA
+          docker push jazibumer/scd_proj_image:test-latest
+          
+          echo "Successfully reused and re-tagged image"
+      
+      - name: Build and push Docker image with current SHA
+        if: steps.check_dev_image.outputs.exists == 'false'
+        run: |
+          # Download JAR artifact only if we need to build
+          echo "Downloading JAR artifact for new build"
+        
+      - name: Download JAR artifact
+        if: steps.check_dev_image.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+      
+      - name: Build and push new Docker image
+        if: steps.check_dev_image.outputs.exists == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: jazibumer/scd_proj_image:${{ env.SHORT_SHA }}
+          tags: |
+            jazibumer/scd_proj_image:${{ steps.get_current_sha.outputs.current_short_sha }}
+            jazibumer/scd_proj_image:test-latest
           build-args: |
             JAR_FILE=target/$(ls target | grep '.jar')
-
-      - name: Update GitOps Repository (dev-kubernetes branch)
+      
+      - name: Update GitOps Repository (test branch)
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
           cd gitops-repo
-          git checkout dev-kubernetes
+          git checkout test
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-
-          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:${SHORT_SHA}|g" K8s/deployment.yaml
-
+          
+          # Use current commit's short SHA as the tag
+          TAG=${{ steps.get_current_sha.outputs.current_short_sha }}
+          
+          echo "Updating deployment with image tag: $TAG"
+          sed -i "s|image: jazibumer/scd_proj_image:.*|image: jazibumer/scd_proj_image:$TAG|g" K8s/deployment.yaml
+          
           git add K8s/deployment.yaml
-          git commit -m "🔄 Update image tag to ${SHORT_SHA}"
-          git push origin dev-kubernetes
+          if [ "${{ steps.check_dev_image.outputs.exists }}" = "true" ]; then
+            git commit -m "🔄 Update image tag to $TAG (reused from dev)"
+          else
+            git commit -m "🔄 Update image tag to $TAG (new build)"
+          fi
+          git push origin test
