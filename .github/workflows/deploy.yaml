@@ -1,4 +1,5 @@
 name: Build, Push, and Update GitOps
+
 on:
   push:
     branches:
