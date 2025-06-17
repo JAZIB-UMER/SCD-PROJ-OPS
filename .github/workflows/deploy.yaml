@@ -3,7 +3,7 @@ name: Build, Push, and Update GitOp
 on:
   push:
     branches:
-      - dev-kubernetes
+      - test
 
 jobs:
   build:
@@ -87,7 +87,7 @@ jobs:
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
           cd gitops-repo
-          git checkout dev-kubernetes
+          git checkout test
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
 
