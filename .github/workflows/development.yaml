@@ -278,7 +278,7 @@ jobs:
             --head dev-kubernetes \
             --title "$PR_TITLE" \
             --body "$PR_BODY" \
-            --label "automated-pr,deployment,test-environment"
+            --label "enhancement"
           
           echo "✅ Pull Request created successfully!"
         env:
