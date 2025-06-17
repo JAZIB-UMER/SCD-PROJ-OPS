@@ -95,4 +95,4 @@ jobs:
 
           git add K8s/deployment.yaml
           git commit -m "🔄 Update image tag to ${SHORT_SHA}"
-          git push origin dev-kubernetes
+          git push origin test
