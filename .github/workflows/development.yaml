@@ -144,6 +144,7 @@ jobs:
             JAR_FILE=target/*.jar
       
       - name: Update GitOps Repository (dev-kubernetes branch)
+        id: update_gitops
         run: |
           git clone https://${{ secrets.GITOPS_PAT }}@github.com/JAZIB-UMER/SCD-GIT-OPS.git gitops-repo
           cd gitops-repo
@@ -160,8 +161,125 @@ jobs:
           git add K8s/deployment.yaml
           
           if [ "${{ steps.check_image.outputs.exists }}" = "true" ]; then
-            git commit -m "🔄 Update image tag to $TAG (image already existed)"
+            COMMIT_MSG="🔄 Update image tag to $TAG (image already existed)"
           else
-            git commit -m "🔄 Update image tag to $TAG (new build)"
+            COMMIT_MSG="🔄 Update image tag to $TAG (new build)"
           fi
+          
+          git commit -m "$COMMIT_MSG"
           git push origin dev-kubernetes
+          
+          # Set output for next step
+          echo "commit_message=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+
+  create-pr-to-test:
+    needs: [build, dockerize-and-update]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitOps Repository
+        uses: actions/checkout@v4
+        with:
+          repository: JAZIB-UMER/SCD-GIT-OPS
+          token: ${{ secrets.GITOPS_PAT }}
+          fetch-depth: 0
+      
+      - name: Get current info
+        id: get_info
+        run: |
+          CURRENT_SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/})
+          CURRENT_TAG="${CURRENT_SHORT_SHA}-${BRANCH_NAME}"
+          
+          echo "current_short_sha=$CURRENT_SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Get latest commit message from source repo
+        id: commit_message
+        run: |
+          # Get the commit message that triggered this workflow
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "commit_message=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "📝 Commit message: $COMMIT_MSG"
+      
+     
+      
+      - name: Check if PR already exists from dev-kubernetes to test
+        id: check_existing_pr
+        run: |
+          # Check if PR exists from dev-kubernetes to test
+          EXISTING_PR=$(gh pr list --base test --head dev-kubernetes --json number,title --jq '.[0].number // empty')
+          
+          if [ -n "$EXISTING_PR" ]; then
+            echo "pr_exists=true" >> $GITHUB_OUTPUT
+            echo "pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+            echo "✅ Found existing PR #$EXISTING_PR from dev-kubernetes to test"
+          else
+            echo "pr_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ No existing PR found from dev-kubernetes to test"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITOPS_PAT }}
+      
+      - name: Update existing PR
+        if: steps.check_existing_pr.outputs.pr_exists == 'true'
+        run: |
+          PR_NUMBER="${{ steps.check_existing_pr.outputs.pr_number }}"
+          COMMIT_MSG="${{ steps.commit_message.outputs.commit_message }}"
+          
+          # Add update comment with commit message
+          UPDATE_COMMENT="🔄 **Workflow Triggered - New Changes Available**
+          
+          **Latest Commit:** $COMMIT_MSG
+          **Image Tag:** \`${{ steps.get_info.outputs.current_tag }}\`
+          **Updated at:** $(date)
+          **Triggered by:** ${{ github.actor }}
+          
+          ### 📋 Changes
+          - Updated deployment image to: \`jazibumer/scd_proj_image:${{ steps.get_info.outputs.current_tag }}\`
+          - This PR now contains the latest changes from dev-kubernetes
+          
+          **Ready for review!** ✅"
+          
+          gh pr comment $PR_NUMBER --body "$UPDATE_COMMENT"
+          echo "✅ Updated existing PR #$PR_NUMBER with latest changes"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITOPS_PAT }}
+      
+      - name: Create new Pull Request
+        if: steps.check_existing_pr.outputs.pr_exists == 'false'
+        run: |
+          COMMIT_MSG="${{ steps.commit_message.outputs.commit_message }}"
+          
+          PR_TITLE="🚀 Deploy to Test: $COMMIT_MSG"
+          PR_BODY="## 🚀 Automated Deployment PR
+          
+          **Commit Message:** $COMMIT_MSG
+          **Image Tag:** \`${{ steps.get_info.outputs.current_tag }}\`
+          **Source Branch:** \`dev-kubernetes\`
+          **Target Branch:** \`test\`
+          **Triggered by:** ${{ github.actor }}
+          **Created:** $(date)
+          
+          ### 📋 Changes
+          - Updated deployment image to: \`jazibumer/scd_proj_image:${{ steps.get_info.outputs.current_tag }}\`
+          - Latest commit: $COMMIT_MSG
+          
+          ### 🔍 Verification Checklist
+          - [ ] Review deployment changes
+          - [ ] Verify image tag is correct
+          - [ ] Test environment deployment
+          
+          **Auto-generated by GitHub Actions** 🤖"
+          
+          gh pr create \
+            --base test \
+            --head dev-kubernetes \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --label "automated-pr,deployment,test-environment"
+          
+          echo "✅ Pull Request created successfully!"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITOPS_PAT }}
